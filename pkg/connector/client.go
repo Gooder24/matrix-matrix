@@ -42,6 +42,7 @@ type MatrixClient struct {
 	retry   context.CancelFunc // under retryMu: stops Connect's tries and a start in progress
 	// under retryMu: sign-out began, so a start ends at once
 	signingOut bool
+	deleting   bool          // under retryMu: the bridge's sign-out, which deletes the login, began
 	logoutDone chan struct{} // closed once the other homeserver answered the logout or logoutWait passed (tests)
 	bridged    sync.Map      // room ID → true when the room there is itself a bridge (left out)
 	typing     sync.Map      // room ID → map[id.UserID]bool of who types there
@@ -259,10 +260,11 @@ func (mc *MatrixClient) stopRetry(forGood bool) (already bool) {
 	return already
 }
 
-func (mc *MatrixClient) isSigningOut() bool {
+// beingDeleted: the bridge signs this login out and deletes it once that is done.
+func (mc *MatrixClient) beingDeleted() bool {
 	mc.retryMu.Lock()
 	defer mc.retryMu.Unlock()
-	return mc.signingOut
+	return mc.deleting
 }
 
 func (mc *MatrixClient) IsLoggedIn() bool {
@@ -306,7 +308,13 @@ func (mc *MatrixClient) dropDevice(ctx context.Context) {
 // logoutWait is how long the other homeserver gets to end the device.
 var logoutWait = 30 * time.Second
 
-func (mc *MatrixClient) LogoutRemote(ctx context.Context) { mc.dropDevice(ctx) }
+// LogoutRemote is the bridge's sign-out, after which it deletes the login.
+func (mc *MatrixClient) LogoutRemote(ctx context.Context) {
+	mc.retryMu.Lock()
+	mc.deleting = true
+	mc.retryMu.Unlock()
+	mc.dropDevice(ctx)
+}
 
 func (mc *MatrixClient) IsThisUser(_ context.Context, uid networkid.UserID) bool {
 	return remoteMXID(uid) == mc.meta().UserID

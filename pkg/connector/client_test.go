@@ -60,3 +60,25 @@ func TestSignOutWithoutAnAnswer(t *testing.T) {
 		t.Error("a second sign-out asked the other homeserver again")
 	}
 }
+
+// Only the bridge's own sign-out, which deletes the login, holds back a new sign-in of the account: a device a
+// sign-in replaced (its NewLogin may still fail) never keeps the account refused.
+func TestOnlyDeletionRefusesSignIn(t *testing.T) {
+	client := func() *MatrixClient {
+		return &MatrixClient{
+			Main: &MatrixConnector{Config: Config{CryptoDir: t.TempDir()}},
+			UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{ID: "alex", Metadata: &UserLoginMetadata{
+				UserID: "@alex:remote.example", DeviceID: "WEFT"}}},
+		}
+	}
+	replaced := client()
+	replaced.dropDevice(context.Background())
+	if replaced.beingDeleted() {
+		t.Error("a device a sign-in replaced refuses the next sign-in")
+	}
+	signedOut := client()
+	signedOut.LogoutRemote(context.Background())
+	if !signedOut.beingDeleted() {
+		t.Error("a sign-in during the bridge's sign-out is not refused")
+	}
+}
