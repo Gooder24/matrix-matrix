@@ -287,6 +287,9 @@ func TestBridge(t *testing.T) {
 		if there == nil {
 			t.Fatal("the reaction did not reach there")
 		}
+		if !there.Mautrix.WasEncrypted {
+			t.Error("the reaction went into the encrypted room unencrypted")
+		}
 		helloThere := bea.find(body("hello Bea")).ID
 		heart := bea.send(thereRoom, event.EventReaction, &event.ReactionEventContent{RelatesTo: event.RelatesTo{Type: event.RelAnnotation, EventID: helloThere, Key: "❤️"}})
 		var heartHere map[string]any
@@ -354,6 +357,34 @@ func TestBridge(t *testing.T) {
 		must(t, content.File.DecryptInPlace(got))
 		if string(got) != string(mineData) {
 			t.Error("the file there does not open to the user's file")
+		}
+		// A caption edited here is edited there, on the copy there.
+		pic := c.upload(data, "pic.png", "image/png")
+		picID := c.send(dm, "m.room.message", map[string]any{"msgtype": "m.image", "body": "first caption", "filename": "pic.png", "url": pic,
+			"info": map[string]any{"mimetype": "image/png", "size": len(data)}})
+		var picThere *event.Event
+		until(wait, func() bool { picThere = bea.find(body("first caption")); return picThere != nil })
+		if picThere == nil {
+			t.Fatal("the captioned picture did not reach there")
+		}
+		c.send(dm, "m.room.message", map[string]any{"msgtype": "m.image", "body": "* second caption",
+			"m.new_content": map[string]any{"msgtype": "m.image", "body": "second caption", "filename": "pic.png", "url": pic,
+				"info": map[string]any{"mimetype": "image/png", "size": len(data)}},
+			"m.relates_to": map[string]any{"rel_type": "m.replace", "event_id": picID}})
+		var captionEdit *event.Event
+		until(wait, func() bool {
+			captionEdit = bea.find(func(evt *event.Event) bool {
+				m := evt.Content.AsMessage()
+				return m.NewContent != nil && m.NewContent.Body == "second caption"
+			})
+			return captionEdit != nil
+		})
+		if captionEdit == nil {
+			t.Fatal("the caption edit did not reach there")
+		}
+		if nc := captionEdit.Content.AsMessage().NewContent; nc.File == nil || nc.File.URL != picThere.Content.AsMessage().File.URL ||
+			captionEdit.Content.AsMessage().RelatesTo.EventID != picThere.ID {
+			t.Errorf("the caption edit does not keep the file there: %+v", nc)
 		}
 		big := make([]byte, 2<<20)
 		bigURL := c.upload(big, "big.bin", "application/octet-stream")

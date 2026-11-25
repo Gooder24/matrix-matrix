@@ -37,10 +37,26 @@ func (mc *MatrixClient) encrypted(ctx context.Context, client *mautrix.Client, r
 }
 
 // send puts an event there under a transaction ID of the bridge's own, so its echo in the sync is dropped.
+// mautrix encrypts everything for an encrypted room except reactions, so those are encrypted here.
 func (mc *MatrixClient) send(ctx context.Context, client *mautrix.Client, room id.RoomID, evtType event.Type, content any) (*mautrix.RespSendEvent, error) {
+	if evtType == event.EventReaction {
+		isEncrypted, err := mc.encrypted(ctx, client, room)
+		if err != nil {
+			return nil, fmt.Errorf("could not tell whether the room is encrypted: %w", err)
+		} else if isEncrypted {
+			if content, err = client.Crypto.Encrypt(ctx, room, evtType, content); err != nil {
+				return nil, err
+			}
+			evtType = event.EventEncrypted
+		}
+	}
 	txn := "mxb" + randomHex(8)
 	mc.sent.Store(txn, true)
-	return client.SendMessageEvent(ctx, room, evtType, content, mautrix.ReqSendEvent{TransactionID: txn})
+	resp, err := client.SendMessageEvent(ctx, room, evtType, content, mautrix.ReqSendEvent{TransactionID: txn})
+	if err != nil {
+		mc.sent.Delete(txn) // no echo comes
+	}
+	return resp, err
 }
 
 func (mc *MatrixClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
@@ -134,8 +150,12 @@ func (mc *MatrixClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.Matr
 	}
 	newContent := *msg.Content
 	newContent.RelatesTo, newContent.NewContent = nil, nil
+	room, target := id.RoomID(msg.Portal.ID), id.EventID(msg.EditTarget.ID)
 	if newContent.URL != "" || newContent.File != nil {
-		return failed(errors.New("only the text of a file's caption can be edited"))
+		// A file's caption: the edit there carries the file of the copy there, not the one here.
+		if err = mc.fileThere(ctx, client, room, target, &newContent); err != nil {
+			return failed(fmt.Errorf("the file's caption could not be edited: %w", err))
+		}
 	}
 	mc.mentionsOut(ctx, &newContent)
 	edit := &event.MessageEventContent{
@@ -144,10 +164,32 @@ func (mc *MatrixClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.Matr
 	if newContent.FormattedBody != "" {
 		edit.Format, edit.FormattedBody = newContent.Format, "* "+newContent.FormattedBody
 	}
-	edit.RelatesTo = (&event.RelatesTo{}).SetReplace(id.EventID(msg.EditTarget.ID))
-	if _, err = mc.send(ctx, client, id.RoomID(msg.Portal.ID), event.EventMessage, edit); err != nil {
+	edit.RelatesTo = (&event.RelatesTo{}).SetReplace(target)
+	if _, err = mc.send(ctx, client, room, event.EventMessage, edit); err != nil {
 		return failed(errors.New(errorText(err)))
 	}
+	return nil
+}
+
+// fileThere puts the file of a message there (its address, keys and info) into c.
+func (mc *MatrixClient) fileThere(ctx context.Context, client *mautrix.Client, room id.RoomID, target id.EventID, c *event.MessageEventContent) error {
+	evt, err := client.GetEvent(ctx, room, target)
+	if err != nil {
+		return err
+	}
+	if err = evt.Content.ParseRaw(evt.Type); err != nil {
+		return err
+	}
+	if evt.Type == event.EventEncrypted {
+		if evt, err = client.Crypto.Decrypt(ctx, evt); err != nil {
+			return err
+		}
+	}
+	there := evt.Content.AsMessage()
+	if there.URL == "" && there.File == nil {
+		return errors.New("the message there has no file")
+	}
+	c.URL, c.File, c.Info = there.URL, there.File, there.Info
 	return nil
 }
 
@@ -177,6 +219,7 @@ func (mc *MatrixClient) redact(ctx context.Context, room id.RoomID, target id.Ev
 	txn := "mxb" + randomHex(8)
 	mc.sent.Store(txn, true)
 	if _, err = client.RedactEvent(ctx, room, target, mautrix.ReqRedact{TxnID: txn}); err != nil {
+		mc.sent.Delete(txn)
 		return failed(errors.New(errorText(err)))
 	}
 	return nil

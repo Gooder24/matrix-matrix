@@ -31,10 +31,10 @@ want the account there to stay the one that is in the rooms.
   bridges there (`m.bridge`, `uk.half-shot.bridge`) are left out, or everything would arrive twice.
 * **History:** only what comes after signing in. When the bridge was away long enough that a room has more new
   events than one sync carries, the room gets a notice that some messages did not come across.
-* **Sending:** encrypted rooms get encrypted messages and files (with fresh keys), always. Mentions of ghosts turn
+* **Sending:** encrypted rooms get encrypted messages, reactions and files (with fresh keys), always. Mentions of ghosts turn
   into the people they stand for; other people of your own server are written as their name alone, so nothing
-  there names your server. A message that cannot go (a file over `max_file_size`, say) fails with a status
-  event, never silently.
+  there names your server. Editing a file's caption edits the copy there. A message that cannot go (a file over
+  `max_file_size`, say) fails with a status event, never silently.
 * **New chats:** `create_dm` with `@name:server` opens the DM the account already has with that person, or makes
   a new encrypted one and remembers it in `m.direct`. `POST /_matrix/provision/v3/join` with
   `{"room": "#alias:server"}` joins a room there.
@@ -63,6 +63,10 @@ $EDITOR config.yaml                # homeserver, database, permissions; the netw
 ./matrix-matrix -g                 # writes registration.yaml; add it to your homeserver
 ./matrix-matrix
 ```
+
+In `config.yaml`, set `matrix.message_status_events: true` so that a message that could not go says so in
+your client, and `bridge.cleanup_on_logout` (`enabled: true`, `delete` for each kind) so that signing out also
+deletes the rooms here; bridgev2's defaults leave both off.
 
 Then send `login` to the bridge bot and follow its instructions, or use the bridgev2 provisioning API
 (`/_matrix/provision/v3/login/start/password`). Turn on double puppeting so that your own messages from other apps

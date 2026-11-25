@@ -34,9 +34,10 @@ type MatrixClient struct {
 	done   chan struct{}
 	ready  bool
 
-	sent    sync.Map // transaction IDs the bridge used there, so their echoes are dropped
-	bridged sync.Map // room ID → true when the room there is itself a bridge (left out)
-	typing  sync.Map // room ID → map[id.UserID]bool of who types there
+	sent    sync.Map   // transaction IDs the bridge used there, so their echoes are dropped
+	roomMu  sync.Mutex // rooms are made one at a time, also from the decryption callback
+	bridged sync.Map   // room ID → true when the room there is itself a bridge (left out)
+	typing  sync.Map   // room ID → map[id.UserID]bool of who types there
 }
 
 var (

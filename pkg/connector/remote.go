@@ -21,7 +21,7 @@ func (mc *MatrixClient) wanted(ctx context.Context, evt *event.Event) bool {
 		return false
 	}
 	if evt.Sender == mc.meta().UserID && evt.Unsigned.TransactionID != "" {
-		if _, ours := mc.sent.Load(evt.Unsigned.TransactionID); ours {
+		if _, ours := mc.sent.LoadAndDelete(evt.Unsigned.TransactionID); ours {
 			return false
 		}
 	}
@@ -185,6 +185,7 @@ func (mc *MatrixClient) cannotDecrypt(evt *event.Event, err error) {
 		return
 	}
 	zerolog.Ctx(ctx).Warn().Err(err).Stringer("event_id", evt.ID).Msg("Undecryptable message")
+	mc.ensureRoom(ctx, portalKey(evt.RoomID, mc.UserLogin))
 	mc.UserLogin.QueueRemoteEvent(&simplevent.Message[error]{
 		EventMeta: simplevent.EventMeta{
 			Type: bridgev2.RemoteEventMessage, PortalKey: portalKey(evt.RoomID, mc.UserLogin), CreatePortal: true,
@@ -294,8 +295,10 @@ func (mc *MatrixClient) copyIn(ctx context.Context, portal *bridgev2.Portal, int
 // Left to bridgev2, rooms of several portals are made at once, and Tuwunel gives two rooms the bot
 // creates in the same millisecond the same ID (room version 12 names a room by its create event).
 func (mc *MatrixClient) ensureRoom(ctx context.Context, key networkid.PortalKey) {
+	mc.roomMu.Lock()
+	defer mc.roomMu.Unlock()
 	portal, err := mc.Main.Bridge.GetPortalByKey(ctx, key)
-	if err != nil || portal.MXID != "" {
+	if err != nil || portal.MXID != "" || !mc.Main.Bridge.Config.PortalCreateFilter.ShouldAllow(mc.UserLogin.ID, key) {
 		return
 	}
 	info, err := mc.GetChatInfo(ctx, portal)
