@@ -246,15 +246,23 @@ func (mc *MatrixClient) stoppable(ctx context.Context) context.Context {
 }
 
 // stopRetry ends Connect's tries; a start of theirs that waits on the homeserver gives up. forGood: sign-out,
-// so every later start gives up at once too.
-func (mc *MatrixClient) stopRetry(forGood bool) {
+// so every later start gives up at once too. It says whether sign-out had begun already.
+func (mc *MatrixClient) stopRetry(forGood bool) (already bool) {
 	mc.retryMu.Lock()
 	defer mc.retryMu.Unlock()
+	already = mc.signingOut
 	mc.signingOut = mc.signingOut || forGood
 	if mc.retry != nil {
 		mc.retry()
 		mc.retry = nil
 	}
+	return already
+}
+
+func (mc *MatrixClient) isSigningOut() bool {
+	mc.retryMu.Lock()
+	defer mc.retryMu.Unlock()
+	return mc.signingOut
 }
 
 func (mc *MatrixClient) IsLoggedIn() bool {
@@ -265,7 +273,9 @@ func (mc *MatrixClient) IsLoggedIn() bool {
 
 // dropDevice ends the bridge's own device there and forgets its keys here.
 func (mc *MatrixClient) dropDevice(ctx context.Context) {
-	mc.stopRetry(true) // a start that waits on the homeserver gives up now, and one that comes later at once
+	if mc.stopRetry(true) { // a start that waits on the homeserver gives up now, and one that comes later at once
+		return // the first sign-out does the rest
+	}
 	mc.stopMu.Lock()
 	mc.dropped = true // a try of Connect that comes after this must not open the keys again
 	mc.stopMu.Unlock()

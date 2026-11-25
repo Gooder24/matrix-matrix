@@ -154,6 +154,10 @@ func (ml *MatrixLogin) tokenLogin(ctx context.Context, client *mautrix.Client, t
 func (ml *MatrixLogin) complete(ctx context.Context, meta *UserLoginMetadata) (*bridgev2.LoginStep, error) {
 	// Signing in again replaces the earlier device; the bridge ends it there if it made it.
 	if old, _ := ml.Main.Bridge.GetExistingUserLoginByID(ctx, loginID(meta.UserID)); old != nil {
+		if old.Client.(*MatrixClient).isSigningOut() {
+			// Its sign-out deletes the login when it ends, and would take this one with it.
+			return nil, loginError("SIGN_OUT_RUNNING", "This account is being signed out right now. Sign in again in a moment.")
+		}
 		if prev := old.Metadata.(*UserLoginMetadata); prev.DeviceID != meta.DeviceID {
 			old.Client.(*MatrixClient).dropDevice(ctx)
 		}

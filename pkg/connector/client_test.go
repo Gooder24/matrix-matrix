@@ -54,4 +54,9 @@ func TestSignOutWithoutAnAnswer(t *testing.T) {
 	if mc.start(mc.stoppable(context.Background())) == nil {
 		t.Error("a start after sign-out went on")
 	}
+	first := mc.logoutDone
+	mc.dropDevice(context.Background()) // a second sign-out, e.g. from a sign-in it cut short, does nothing more
+	if mc.logoutDone != first {
+		t.Error("a second sign-out asked the other homeserver again")
+	}
 }
