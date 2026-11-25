@@ -34,11 +34,13 @@ type MatrixClient struct {
 	done   chan struct{}
 	ready  bool
 
-	sent    sync.Map   // transaction IDs the bridge used there, so their echoes are dropped
-	roomMu  sync.Mutex // rooms are made one at a time, also from the decryption callback
-	stopMu  sync.Mutex // start and Disconnect one at a time; taken before mu
-	bridged sync.Map   // room ID → true when the room there is itself a bridge (left out)
-	typing  sync.Map   // room ID → map[id.UserID]bool of who types there
+	sent    sync.Map           // transaction IDs the bridge used there, so their echoes are dropped
+	roomMu  sync.Mutex         // rooms are made one at a time, also from the decryption callback
+	stopMu  sync.Mutex         // start and Disconnect one at a time; taken before mu
+	dropped bool               // under stopMu: the device was ended, so this client never starts again
+	retry   context.CancelFunc // under mu: stops Connect's tries
+	bridged sync.Map           // room ID → true when the room there is itself a bridge (left out)
+	typing  sync.Map           // room ID → map[id.UserID]bool of who types there
 }
 
 var (
@@ -88,6 +90,11 @@ func (mc *MatrixClient) removeKeys() {
 func (mc *MatrixClient) start(ctx context.Context) error {
 	mc.stopMu.Lock()
 	defer mc.stopMu.Unlock()
+	if mc.dropped {
+		return errDropped
+	} else if err := ctx.Err(); err != nil {
+		return err
+	}
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	if mc.ready {
@@ -173,11 +180,18 @@ func (mc *MatrixClient) onSync(ctx context.Context, resp *mautrix.RespSync, sinc
 // Connect starts the account; when the homeserver is away it keeps trying, longer each time.
 func (mc *MatrixClient) Connect(ctx context.Context) {
 	mc.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateConnecting})
+	ctx, cancel := context.WithCancel(ctx)
+	mc.mu.Lock()
+	if mc.retry != nil {
+		mc.retry()
+	}
+	mc.retry = cancel
+	mc.mu.Unlock()
 	go func() {
 		delay := 10 * time.Second
 		for {
 			err := mc.start(ctx)
-			if err == nil {
+			if err == nil || errors.Is(err, errDropped) || ctx.Err() != nil {
 				return
 			}
 			if errors.Is(err, mautrix.MUnknownToken) {
@@ -199,6 +213,12 @@ func (mc *MatrixClient) Connect(ctx context.Context) {
 // Disconnect stops the sync and closes the keys. It waits for the sync without holding mc.mu: the sync's
 // handlers take it (remote()), and an event in hand would never finish.
 func (mc *MatrixClient) Disconnect() {
+	mc.mu.Lock()
+	if mc.retry != nil {
+		mc.retry() // Connect's tries end, and a start in progress gives up
+		mc.retry = nil
+	}
+	mc.mu.Unlock()
 	mc.stopMu.Lock() // a second Disconnect or a start waits until this one closed the keys
 	defer mc.stopMu.Unlock()
 	mc.mu.Lock()
@@ -224,6 +244,9 @@ func (mc *MatrixClient) IsLoggedIn() bool {
 
 // dropDevice ends the bridge's own device there and forgets its keys here.
 func (mc *MatrixClient) dropDevice(ctx context.Context) {
+	mc.stopMu.Lock()
+	mc.dropped = true // a try of Connect that comes after this must not open the keys again
+	mc.stopMu.Unlock()
 	mc.Disconnect()
 	m := mc.meta()
 	if m.OwnDevice {
@@ -241,6 +264,8 @@ func (mc *MatrixClient) LogoutRemote(ctx context.Context) { mc.dropDevice(ctx) }
 func (mc *MatrixClient) IsThisUser(_ context.Context, uid networkid.UserID) bool {
 	return remoteMXID(uid) == mc.meta().UserID
 }
+
+var errDropped = errors.New("the device was ended")
 
 // remote is the running client, or an error the bridge shows when the account is not connected.
 func (mc *MatrixClient) remote() (*mautrix.Client, error) {
