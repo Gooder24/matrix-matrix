@@ -38,7 +38,8 @@ type MatrixClient struct {
 	roomMu  sync.Mutex         // rooms are made one at a time, also from the decryption callback
 	stopMu  sync.Mutex         // start and Disconnect one at a time; taken before mu
 	dropped bool               // under stopMu: the device was ended, so this client never starts again
-	retry   context.CancelFunc // under mu: stops Connect's tries
+	retryMu sync.Mutex         // never held across a request, so Disconnect can always stop Connect's tries
+	retry   context.CancelFunc // under retryMu: stops Connect's tries and a start in progress
 	bridged sync.Map           // room ID → true when the room there is itself a bridge (left out)
 	typing  sync.Map           // room ID → map[id.UserID]bool of who types there
 }
@@ -181,12 +182,12 @@ func (mc *MatrixClient) onSync(ctx context.Context, resp *mautrix.RespSync, sinc
 func (mc *MatrixClient) Connect(ctx context.Context) {
 	mc.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateConnecting})
 	ctx, cancel := context.WithCancel(ctx)
-	mc.mu.Lock()
+	mc.retryMu.Lock()
 	if mc.retry != nil {
 		mc.retry()
 	}
 	mc.retry = cancel
-	mc.mu.Unlock()
+	mc.retryMu.Unlock()
 	go func() {
 		delay := 10 * time.Second
 		for {
@@ -213,12 +214,7 @@ func (mc *MatrixClient) Connect(ctx context.Context) {
 // Disconnect stops the sync and closes the keys. It waits for the sync without holding mc.mu: the sync's
 // handlers take it (remote()), and an event in hand would never finish.
 func (mc *MatrixClient) Disconnect() {
-	mc.mu.Lock()
-	if mc.retry != nil {
-		mc.retry() // Connect's tries end, and a start in progress gives up
-		mc.retry = nil
-	}
-	mc.mu.Unlock()
+	mc.stopRetry()
 	mc.stopMu.Lock() // a second Disconnect or a start waits until this one closed the keys
 	defer mc.stopMu.Unlock()
 	mc.mu.Lock()
@@ -236,6 +232,16 @@ func (mc *MatrixClient) Disconnect() {
 	_ = db.Close()
 }
 
+// stopRetry ends Connect's tries; a start of theirs that waits on the homeserver gives up.
+func (mc *MatrixClient) stopRetry() {
+	mc.retryMu.Lock()
+	defer mc.retryMu.Unlock()
+	if mc.retry != nil {
+		mc.retry()
+		mc.retry = nil
+	}
+}
+
 func (mc *MatrixClient) IsLoggedIn() bool {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
@@ -244,6 +250,7 @@ func (mc *MatrixClient) IsLoggedIn() bool {
 
 // dropDevice ends the bridge's own device there and forgets its keys here.
 func (mc *MatrixClient) dropDevice(ctx context.Context) {
+	mc.stopRetry() // a start of Connect that waits on the homeserver gives up now
 	mc.stopMu.Lock()
 	mc.dropped = true // a try of Connect that comes after this must not open the keys again
 	mc.stopMu.Unlock()
