@@ -193,18 +193,22 @@ func (mc *MatrixClient) Connect(ctx context.Context) {
 	}()
 }
 
+// Disconnect stops the sync and closes the keys. It waits for the sync without holding mc.mu: the sync's
+// handlers take it (remote()), and an event in hand would never finish.
 func (mc *MatrixClient) Disconnect() {
 	mc.mu.Lock()
-	defer mc.mu.Unlock()
 	if !mc.ready {
+		mc.mu.Unlock()
 		return
 	}
 	mc.ready = false
-	mc.cancel()
-	mc.client.StopSync()
-	<-mc.done
-	_ = mc.crypto.Close()
-	_ = mc.db.Close()
+	cancel, client, done, helper, db := mc.cancel, mc.client, mc.done, mc.crypto, mc.db
+	mc.mu.Unlock()
+	cancel()
+	client.StopSync()
+	<-done
+	_ = helper.Close()
+	_ = db.Close()
 }
 
 func (mc *MatrixClient) IsLoggedIn() bool {
