@@ -181,13 +181,7 @@ func (mc *MatrixClient) onSync(ctx context.Context, resp *mautrix.RespSync, sinc
 // Connect starts the account; when the homeserver is away it keeps trying, longer each time.
 func (mc *MatrixClient) Connect(ctx context.Context) {
 	mc.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateConnecting})
-	ctx, cancel := context.WithCancel(ctx)
-	mc.retryMu.Lock()
-	if mc.retry != nil {
-		mc.retry()
-	}
-	mc.retry = cancel
-	mc.retryMu.Unlock()
+	ctx = mc.stoppable(ctx)
 	go func() {
 		delay := 10 * time.Second
 		for {
@@ -232,6 +226,18 @@ func (mc *MatrixClient) Disconnect() {
 	_ = db.Close()
 }
 
+// stoppable gives a start a context that sign-out ends (stopRetry); it ends the start before it, if any.
+func (mc *MatrixClient) stoppable(ctx context.Context) context.Context {
+	ctx, cancel := context.WithCancel(ctx)
+	mc.retryMu.Lock()
+	defer mc.retryMu.Unlock()
+	if mc.retry != nil {
+		mc.retry()
+	}
+	mc.retry = cancel
+	return ctx
+}
+
 // stopRetry ends Connect's tries; a start of theirs that waits on the homeserver gives up.
 func (mc *MatrixClient) stopRetry() {
 	mc.retryMu.Lock()
@@ -255,16 +261,21 @@ func (mc *MatrixClient) dropDevice(ctx context.Context) {
 	mc.dropped = true // a try of Connect that comes after this must not open the keys again
 	mc.stopMu.Unlock()
 	mc.Disconnect()
+	mc.removeKeys() // first: a homeserver that does not answer the logout must not keep the keys here
 	m := mc.meta()
 	if m.OwnDevice {
 		if c, err := mautrix.NewClient(m.Homeserver, m.UserID, m.Token); err == nil {
+			ctx, cancel := context.WithTimeout(ctx, logoutWait)
+			defer cancel()
 			if _, err = c.Logout(ctx); err != nil {
 				zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to end the device on the other homeserver")
 			}
 		}
 	}
-	mc.removeKeys()
 }
+
+// logoutWait is how long sign-out waits for the other homeserver to end the device.
+var logoutWait = 30 * time.Second
 
 func (mc *MatrixClient) LogoutRemote(ctx context.Context) { mc.dropDevice(ctx) }
 

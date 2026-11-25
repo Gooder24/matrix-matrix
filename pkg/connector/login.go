@@ -170,7 +170,7 @@ func (ml *MatrixLogin) complete(ctx context.Context, meta *UserLoginMetadata) (*
 	client := ul.Client.(*MatrixClient)
 	// Keys of an earlier device of this login never come back.
 	client.removeOtherKeys()
-	if err = client.start(ctx); err != nil {
+	if err = client.start(client.stoppable(ctx)); err != nil { // a sign-out meanwhile ends it
 		ul.Client.(*MatrixClient).dropDevice(context.WithoutCancel(ctx))
 		ul.Delete(ctx, status.BridgeState{StateEvent: status.StateLoggedOut, Reason: "START_FAILED"}, bridgev2.DeleteOpts{LogoutRemote: false})
 		return nil, loginError("START_FAILED", "Signed in, but encryption could not start: "+err.Error())
