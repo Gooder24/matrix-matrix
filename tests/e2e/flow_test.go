@@ -3,9 +3,13 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -655,12 +659,55 @@ func TestBridge(t *testing.T) {
 	})
 
 	t.Run("token sign-in", func(t *testing.T) {
-		first := &loginStep{}
-		must(t, e.provision("POST", "/v3/login/start/token", map[string]any{}, first))
-		done := &loginStep{}
-		if err := e.provision("POST", "/v3/login/step/"+first.LoginID+"/"+first.StepID+"/user_input",
-			map[string]string{"homeserver": e.remoteURL, "token": e.there.token}, done); err != nil || done.Type != "complete" {
-			t.Fatalf("token sign-in: %v %+v", err, done)
+		// The same token given twice at once: the second checks the session's keys before the first has
+		// published them, then waits for it. Both end signed in to the one session, its keys kept.
+		target, _ := url.Parse(e.remoteURL)
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		held, release := make(chan struct{}), make(chan struct{})
+		var holding, released sync.Once
+		gate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/keys/upload"):
+				holding.Do(func() { close(held) })
+				select { // the second's check passed; a guard so a change in order cannot hang the suite
+				case <-release:
+				case <-time.After(wait):
+				}
+			case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/keys/query"):
+				select {
+				case <-held:
+					defer released.Do(func() { close(release) })
+				default:
+				}
+			}
+			proxy.ServeHTTP(w, r)
+		}))
+		defer gate.Close()
+		submit := func() (*loginStep, error) {
+			first := &loginStep{}
+			if err := e.provision("POST", "/v3/login/start/token", map[string]any{}, first); err != nil {
+				return nil, err
+			}
+			done := &loginStep{}
+			return done, e.provision("POST", "/v3/login/step/"+first.LoginID+"/"+first.StepID+"/user_input",
+				map[string]string{"homeserver": gate.URL, "token": e.there.token}, done)
+		}
+		type result struct {
+			done *loginStep
+			err  error
+		}
+		results := make(chan result, 2)
+		go func() { done, err := submit(); results <- result{done, err} }()
+		select {
+		case <-held:
+		case <-time.After(wait):
+			t.Fatal("the first token sign-in never published its keys")
+		}
+		go func() { done, err := submit(); results <- result{done, err} }()
+		for range 2 {
+			if r := <-results; r.err != nil || r.done.Type != "complete" {
+				t.Fatalf("token sign-in: %v %+v", r.err, r.done)
+			}
 		}
 		if !until(wait, func() bool { _, s := e.state(); return s == "CONNECTED" }) {
 			t.Error("not connected with a token")

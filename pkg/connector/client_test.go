@@ -2,9 +2,11 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -80,5 +82,38 @@ func TestOnlyDeletionRefusesSignIn(t *testing.T) {
 	signedOut.LogoutRemote(context.Background())
 	if !signedOut.beingDeleted() {
 		t.Error("a sign-in during the bridge's sign-out is not refused")
+	}
+}
+
+// A sign-in that waited for another sign-in of the account and whose caller left meanwhile ends the device it made
+// there and leaves the account as the first one set it: it never drops the first one's device.
+func TestLeftSignInEndsItsDevice(t *testing.T) {
+	ended := make(chan string, 1)
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/_matrix/client/v3/logout" {
+			ended <- r.Header.Get("Authorization")
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer hs.Close()
+	ml := &MatrixLogin{Main: &MatrixConnector{}} // no bridge: reaching the logins at all fails the test
+	meta := &UserLoginMetadata{Homeserver: hs.URL, UserID: "@alex:remote.example", DeviceID: "SECOND", Token: "second", OwnDevice: true}
+	lock, _ := ml.Main.signIns.LoadOrStore(loginID(meta.UserID), &sync.Mutex{})
+	lock.(*sync.Mutex).Lock() // the first sign-in of the account is still running
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { _, err := ml.complete(ctx, meta); result <- err }()
+	cancel()
+	lock.(*sync.Mutex).Unlock()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("a left sign-in: %v", err)
+	}
+	select {
+	case auth := <-ended:
+		if auth != "Bearer second" {
+			t.Errorf("ended %q, not the left sign-in's device", auth)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the left sign-in's device was never ended there")
 	}
 }

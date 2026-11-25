@@ -157,16 +157,27 @@ func (ml *MatrixLogin) complete(ctx context.Context, meta *UserLoginMetadata) (*
 	lock, _ := ml.Main.signIns.LoadOrStore(loginID(meta.UserID), &sync.Mutex{})
 	lock.(*sync.Mutex).Lock()
 	defer lock.(*sync.Mutex).Unlock()
+	// A sign-in that is not finished here ends the device it made there, so no session is left behind.
+	if err := ctx.Err(); err != nil {
+		abandon(ctx, meta)
+		return nil, err
+	}
 	// Signing in again replaces the earlier device; the bridge ends it there if it made it.
 	if old, _ := ml.Main.Bridge.GetExistingUserLoginByID(ctx, loginID(meta.UserID)); old != nil {
 		if old.Client.(*MatrixClient).beingDeleted() {
 			// Its sign-out deletes the login when it ends, and would take this one with it.
+			abandon(ctx, meta)
 			return nil, loginError("SIGN_OUT_RUNNING", "This account is being signed out right now. Sign in again in a moment.")
 		}
 		if prev := old.Metadata.(*UserLoginMetadata); prev.DeviceID != meta.DeviceID {
 			old.Client.(*MatrixClient).dropDevice(ctx)
+		} else {
+			// The same session given again (a token): its keys stay, so they must open with the same key.
+			meta.PickleKey = prev.PickleKey
 		}
 	}
+	// From here the old device is gone: a caller that leaves no longer stops the new one from being kept.
+	ctx = context.WithoutCancel(ctx)
 	ul, err := ml.User.NewLogin(ctx, &database.UserLogin{
 		ID:            loginID(meta.UserID),
 		RemoteName:    string(meta.UserID),
@@ -174,13 +185,14 @@ func (ml *MatrixLogin) complete(ctx context.Context, meta *UserLoginMetadata) (*
 		Metadata:      meta,
 	}, &bridgev2.NewLoginParams{DeleteOnConflict: true})
 	if err != nil {
+		abandon(ctx, meta)
 		return nil, fmt.Errorf("failed to save the login: %w", err)
 	}
 	client := ul.Client.(*MatrixClient)
 	// Keys of an earlier device of this login never come back.
 	client.removeOtherKeys()
 	if err = client.start(client.stoppable(ctx)); err != nil { // a sign-out meanwhile ends it
-		ul.Client.(*MatrixClient).dropDevice(context.WithoutCancel(ctx))
+		ul.Client.(*MatrixClient).dropDevice(ctx)
 		ul.Delete(ctx, status.BridgeState{StateEvent: status.StateLoggedOut, Reason: "START_FAILED"}, bridgev2.DeleteOpts{LogoutRemote: false})
 		return nil, loginError("START_FAILED", "Signed in, but encryption could not start: "+err.Error())
 	}
@@ -190,6 +202,14 @@ func (ml *MatrixLogin) complete(ctx context.Context, meta *UserLoginMetadata) (*
 		Instructions:   "Signed in as " + string(meta.UserID),
 		CompleteParams: &bridgev2.LoginCompleteParams{UserLoginID: ul.ID, UserLogin: ul},
 	}, nil
+}
+
+// abandon ends the device a sign-in made there when the sign-in is not kept here. A session the user gave
+// (a token) stays theirs.
+func abandon(ctx context.Context, meta *UserLoginMetadata) {
+	if meta.OwnDevice {
+		endDevice(ctx, meta)
+	}
 }
 
 var reLocal = regexp.MustCompile(`^http://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(/|$)`)
