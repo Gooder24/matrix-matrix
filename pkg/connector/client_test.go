@@ -12,8 +12,8 @@ import (
 	"maunium.net/go/mautrix/bridgev2/database"
 )
 
-// Sign-out forgets the keys here at once, also when the other homeserver never answers the logout, and gives
-// that logout up after logoutWait.
+// Sign-out is done here at once, keys forgotten, also when the other homeserver never answers the logout: a
+// sign-in right after it is never undone by it. The logout there is given up after logoutWait.
 func TestSignOutWithoutAnAnswer(t *testing.T) {
 	asked := make(chan struct{}, 1)
 	release := make(chan struct{})
@@ -37,15 +37,21 @@ func TestSignOutWithoutAnAnswer(t *testing.T) {
 	}
 	defer func(was time.Duration) { logoutWait = was }(logoutWait)
 	logoutWait = 2 * time.Second
-	done := make(chan struct{})
-	go func() { mc.dropDevice(context.Background()); close(done) }()
-	<-asked
+	mc.dropDevice(context.Background())
 	if _, err := os.Stat(keys); !os.IsNotExist(err) {
-		t.Errorf("keys still here while the logout waits: %v", err)
+		t.Errorf("keys still here after sign-out: %v", err)
 	}
 	select {
-	case <-done:
+	case <-asked:
 	case <-time.After(10 * time.Second):
-		t.Fatal("sign-out still waits for the homeserver after logoutWait")
+		t.Fatal("the other homeserver was never asked to end the device")
+	}
+	select {
+	case <-mc.logoutDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the logout there was not given up after logoutWait")
+	}
+	if mc.start(mc.stoppable(context.Background())) == nil {
+		t.Error("a start after sign-out went on")
 	}
 }
