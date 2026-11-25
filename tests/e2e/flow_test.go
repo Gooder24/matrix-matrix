@@ -561,9 +561,19 @@ func TestBridge(t *testing.T) {
 	})
 
 	t.Run("signing in again keeps the chats", func(t *testing.T) {
-		_, done, err := e.login()
-		if err != nil || done.Type != "complete" {
-			t.Fatalf("login again: %v %+v", err, done)
+		// Twice at once (two clicks, two windows): one after the other, the second replaces the first's device.
+		type result struct {
+			done *loginStep
+			err  error
+		}
+		results := make(chan result, 2)
+		for range 2 {
+			go func() { _, done, err := e.login(); results <- result{done, err} }()
+		}
+		for range 2 {
+			if r := <-results; r.err != nil || r.done.Type != "complete" {
+				t.Fatalf("login again: %v %+v", r.err, r.done)
+			}
 		}
 		if !until(wait, func() bool { _, s := e.state(); return s == "CONNECTED" }) {
 			t.Fatal("not connected after signing in again")

@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"os"
+	"sync"
 
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
@@ -13,6 +14,8 @@ import (
 type MatrixConnector struct {
 	Bridge *bridgev2.Bridge
 	Config Config
+
+	signIns sync.Map // login ID → *sync.Mutex: one sign-in of an account finishes at a time
 }
 
 var _ bridgev2.NetworkConnector = (*MatrixConnector)(nil)

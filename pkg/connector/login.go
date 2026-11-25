@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"maunium.net/go/mautrix"
@@ -152,6 +153,10 @@ func (ml *MatrixLogin) tokenLogin(ctx context.Context, client *mautrix.Client, t
 }
 
 func (ml *MatrixLogin) complete(ctx context.Context, meta *UserLoginMetadata) (*bridgev2.LoginStep, error) {
+	// Two sign-ins of one account at once would both replace the same login; the second waits for the first.
+	lock, _ := ml.Main.signIns.LoadOrStore(loginID(meta.UserID), &sync.Mutex{})
+	lock.(*sync.Mutex).Lock()
+	defer lock.(*sync.Mutex).Unlock()
 	// Signing in again replaces the earlier device; the bridge ends it there if it made it.
 	if old, _ := ml.Main.Bridge.GetExistingUserLoginByID(ctx, loginID(meta.UserID)); old != nil {
 		if old.Client.(*MatrixClient).beingDeleted() {
