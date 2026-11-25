@@ -1,0 +1,9 @@
+# Name of the device the bridge adds to each account it signs in to.
+device_name: Matrix bridge
+# Where each login's encryption keys and sync state are kept, one SQLite file per login and device.
+# Signing out deletes the file; never restore an old one (old Olm/Megolm state breaks encryption).
+crypto_dir: crypto
+# Files larger than this do not cross, in either direction (a note says so).
+max_file_size: 26214400
+# Rooms with up to this many people get all their members at once; in bigger ones people appear as they write.
+members_at_once: 20
