@@ -36,6 +36,7 @@ type MatrixClient struct {
 
 	sent    sync.Map   // transaction IDs the bridge used there, so their echoes are dropped
 	roomMu  sync.Mutex // rooms are made one at a time, also from the decryption callback
+	stopMu  sync.Mutex // start and Disconnect one at a time; taken before mu
 	bridged sync.Map   // room ID → true when the room there is itself a bridge (left out)
 	typing  sync.Map   // room ID → map[id.UserID]bool of who types there
 }
@@ -85,6 +86,8 @@ func (mc *MatrixClient) removeKeys() {
 
 // start opens the keys, turns encryption on and starts syncing. It returns once encryption works.
 func (mc *MatrixClient) start(ctx context.Context) error {
+	mc.stopMu.Lock()
+	defer mc.stopMu.Unlock()
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	if mc.ready {
@@ -196,6 +199,8 @@ func (mc *MatrixClient) Connect(ctx context.Context) {
 // Disconnect stops the sync and closes the keys. It waits for the sync without holding mc.mu: the sync's
 // handlers take it (remote()), and an event in hand would never finish.
 func (mc *MatrixClient) Disconnect() {
+	mc.stopMu.Lock() // a second Disconnect or a start waits until this one closed the keys
+	defer mc.stopMu.Unlock()
 	mc.mu.Lock()
 	if !mc.ready {
 		mc.mu.Unlock()
