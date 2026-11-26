@@ -260,6 +260,13 @@ func (mc *MatrixClient) stopRetry(forGood bool) (already bool) {
 	return already
 }
 
+// signedOut: this client was signed out or taken over and never starts again.
+func (mc *MatrixClient) signedOut() bool {
+	mc.retryMu.Lock()
+	defer mc.retryMu.Unlock()
+	return mc.signingOut
+}
+
 // beingDeleted: the bridge signs this login out and deletes it once that is done.
 func (mc *MatrixClient) beingDeleted() bool {
 	mc.retryMu.Lock()

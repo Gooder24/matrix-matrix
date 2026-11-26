@@ -804,4 +804,64 @@ func TestBridge(t *testing.T) {
 		}
 	})
 
+	t.Run("the bridge stopping while a new sign-in starts keeps it", func(t *testing.T) {
+		if _, done, err := e.login(); err != nil || done.Type != "complete" {
+			t.Fatalf("sign-in: %v %+v", err, done)
+		}
+		// The new sign-in replaces that one, and the bridge stops while its encryption waits for the homeserver.
+		target, _ := url.Parse(e.remoteURL)
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		held, release := make(chan struct{}), make(chan struct{})
+		var holding sync.Once
+		gate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "/keys/") {
+				holding.Do(func() { close(held) })
+				<-release
+			}
+			proxy.ServeHTTP(w, r)
+		}))
+		defer gate.Close()
+		go func() {
+			first := &loginStep{}
+			if e.provision("POST", "/v3/login/start/password", map[string]any{}, first) == nil {
+				_ = e.provision("POST", "/v3/login/step/"+first.LoginID+"/"+first.StepID+"/user_input",
+					map[string]string{"homeserver": gate.URL, "username": "alex", "password": "test-password-alex"}, nil)
+			}
+		}()
+		select {
+		case <-held:
+		case <-time.After(wait):
+			close(release)
+			t.Fatal("the new sign-in never started its encryption")
+		}
+		e.stopBridge()
+		close(release)
+		e.startBridge()
+		if !until(wait, func() bool { _, s := e.state(); return s == "CONNECTED" }) {
+			t.Fatal("no working login after the restart")
+		}
+		loginID, _ := e.state()
+		saved := &mx{t: t, base: e.remoteURL, token: e.query("SELECT json_extract(metadata, '$.token') FROM user_login WHERE id = ?", loginID)}
+		if err := saved.call("GET", "/_matrix/client/v3/account/whoami", nil, nil); err != nil {
+			t.Errorf("the saved login's device was ended there: %v", err)
+		}
+		var devices struct {
+			Devices []struct {
+				Name string `json:"display_name"`
+			} `json:"devices"`
+		}
+		if !until(wait, func() bool {
+			must(t, e.there.call("GET", "/_matrix/client/v3/devices", nil, &devices))
+			n := 0
+			for _, d := range devices.Devices {
+				if d.Name == "Matrix bridge" {
+					n++
+				}
+			}
+			return n == 1
+		}) {
+			t.Errorf("devices of the bridge there: %+v", devices.Devices)
+		}
+	})
+
 }

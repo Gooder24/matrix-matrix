@@ -188,20 +188,29 @@ func (ml *MatrixLogin) complete(ctx context.Context, meta *UserLoginMetadata) (*
 	cleanup := context.WithoutCancel(ctx)
 	if err != nil {
 		abandon(cleanup, meta)
-		if still, _ := ml.Main.Bridge.GetExistingUserLoginByID(cleanup, loginID(meta.UserID)); old != nil && still == old {
+		still, _ := ml.Main.Bridge.GetExistingUserLoginByID(cleanup, loginID(meta.UserID))
+		switch {
+		case old == nil:
+		case still == old:
 			// bridgev2 may have put the new login in place in memory before its save failed; the database still
 			// holds the earlier one, which goes on.
 			old.Metadata, old.Client = prev, oldClient
 			if !oldClient.IsLoggedIn() {
 				oldClient.Connect(cleanup)
 			}
-		} else if old != nil && prev.OwnDevice && prev.DeviceID != meta.DeviceID {
+		case still != nil && still.Metadata.(*UserLoginMetadata).DeviceID == prev.DeviceID:
+			// bridgev2 loaded the earlier login again from the database (its deletion failed): it goes on.
+			if c := still.Client.(*MatrixClient); !c.IsLoggedIn() {
+				c.Connect(cleanup)
+			}
+		case prev.OwnDevice && prev.DeviceID != meta.DeviceID:
 			// bridgev2 deleted the earlier login (another user of this bridge had the account) without ending its device.
 			endDevice(cleanup, prev)
 		}
 		return nil, fmt.Errorf("failed to save the login: %w", err)
 	}
-	if old != nil && prev.DeviceID != meta.DeviceID {
+	replacing := old != nil && prev.DeviceID != meta.DeviceID
+	if replacing {
 		oldClient.retire()
 		if prev.OwnDevice {
 			endDevice(cleanup, prev)
@@ -211,10 +220,16 @@ func (ml *MatrixLogin) complete(ctx context.Context, meta *UserLoginMetadata) (*
 	// Keys of an earlier device of this login never come back.
 	client.removeOtherKeys()
 	starting := ctx
-	if old != nil && prev.DeviceID != meta.DeviceID {
+	if replacing {
 		starting = cleanup // the earlier device is gone: only a sign-out stops the new one now
 	}
-	if err = client.start(client.stoppable(starting)); err != nil { // a sign-out ends it
+	if err = client.start(client.stoppable(starting)); err != nil && replacing && !client.signedOut() {
+		// The new login is saved and the earlier one is gone: it keeps trying (the bridge stopping, the homeserver
+		// away), like after a restart, rather than leave the account without a login.
+		client.Connect(cleanup)
+		err = nil
+	}
+	if err != nil { // a sign-out ends it
 		client.dropDevice(cleanup)
 		ul.Delete(cleanup, status.BridgeState{StateEvent: status.StateLoggedOut, Reason: "START_FAILED"}, bridgev2.DeleteOpts{LogoutRemote: false})
 		return nil, loginError("START_FAILED", "Signed in, but encryption could not start: "+err.Error())
