@@ -667,7 +667,11 @@ func TestBridge(t *testing.T) {
 			t.Error("the login is still there")
 		}
 		gone := &mx{t: t, base: e.remoteURL, token: token}
-		if err := gone.call("GET", "/_matrix/client/v3/account/whoami", nil, nil); err == nil || !strings.Contains(err.Error(), "401") {
+		var err error
+		if !until(wait, func() bool { // the other homeserver is asked in the background
+			err = gone.call("GET", "/_matrix/client/v3/account/whoami", nil, nil)
+			return err != nil && strings.Contains(err.Error(), "401")
+		}) {
 			t.Errorf("the bridge's token still works there: %v", err)
 		}
 		if files, _ := filepath.Glob(filepath.Join(e.dir, "crypto", "*")); len(files) != 0 {
