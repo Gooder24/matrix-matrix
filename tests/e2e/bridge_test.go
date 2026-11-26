@@ -90,6 +90,8 @@ func homeserver(t *testing.T, dir, name, regToken, appservices string) string {
 	if appservices != "" {
 		conf += fmt.Sprintf("appservice_dir = %q\n", appservices)
 	}
+	// The tests sign one account in many times in a row.
+	conf += "[global.rate_limiting.login.account]\nper_second = 100.0\nburst_count = 1000\n"
 	must(t, os.WriteFile(filepath.Join(base, "tuwunel.toml"), []byte(conf), 0o600))
 	logFile, _ := os.Create(filepath.Join(base, "log"))
 	cmd := exec.Command(tuwunel, "-c", filepath.Join(base, "tuwunel.toml"))
@@ -124,12 +126,17 @@ type env struct {
 }
 
 func (e *env) provision(method, path string, body any, out any) error {
+	return e.provisionAs(e.c.userID, method, path, body, out)
+}
+
+// provisionAs is provision for another user of the bridge on this homeserver.
+func (e *env) provisionAs(user, method, path string, body any, out any) error {
 	data, _ := json.Marshal(body)
 	sep := "?"
 	if strings.Contains(path, "?") {
 		sep = "&"
 	}
-	req, _ := http.NewRequest(method, e.prov+path+sep+"user_id="+url.QueryEscape(e.c.userID), bytes.NewReader(data))
+	req, _ := http.NewRequest(method, e.prov+path+sep+"user_id="+url.QueryEscape(user), bytes.NewReader(data))
 	req.Header.Set("Authorization", "Bearer "+e.provAuth)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -202,6 +209,7 @@ bridge:
     personal_filtering_spaces: false
     permissions:
         "%s": admin
+        "@carl:%s": user
     cleanup_on_logout:
         enabled: true
         manual:
@@ -237,7 +245,7 @@ logging:
     writers:
     - type: stdout
       format: pretty
-`, filepath.Join(dir, "crypto"), c.userID, filepath.Join(dir, "bridge.db"), localURL, server, brPort, brPort, asToken, hsToken,
+`, filepath.Join(dir, "crypto"), c.userID, server, filepath.Join(dir, "bridge.db"), localURL, server, brPort, brPort, asToken, hsToken,
 		server, asToken, provSecret)
 	must(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(config), 0o600))
 	e := &env{t: t, dir: dir, c: c, there: there, bea: bea, remoteURL: remoteURL, bin: bin, config: filepath.Join(dir, "config.yaml"),

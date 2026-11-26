@@ -764,4 +764,44 @@ func TestBridge(t *testing.T) {
 			t.Errorf("signing out of the bridge ended the given session: %v", err)
 		}
 	})
+
+	t.Run("another user's sign-in that cannot be saved ends both devices", func(t *testing.T) {
+		// bridgev2 deletes the account's login of another user of the bridge before saving the new one.
+		if _, done, err := e.login(); err != nil || done.Type != "complete" {
+			t.Fatalf("sign-in: %v %+v", err, done)
+		}
+		loginID, _ := e.state()
+		token := e.query("SELECT json_extract(metadata, '$.token') FROM user_login WHERE id = ?", loginID)
+		e.exec("CREATE TRIGGER no_insert BEFORE INSERT ON user_login BEGIN SELECT RAISE(ABORT, 'no insert'); END")
+		defer e.exec("DROP TRIGGER no_insert")
+		carl := "@carl:" + server
+		first := &loginStep{}
+		must(t, e.provisionAs(carl, "POST", "/v3/login/start/password", map[string]any{}, first))
+		err := e.provisionAs(carl, "POST", "/v3/login/step/"+first.LoginID+"/"+first.StepID+"/user_input",
+			map[string]string{"homeserver": e.remoteURL, "username": "alex", "password": "test-password-alex"}, &loginStep{})
+		if err == nil || !strings.Contains(err.Error(), "failed to save") {
+			t.Fatalf("a sign-in the bridge could not save: %v", err)
+		}
+		gone := &mx{t: t, base: e.remoteURL, token: token}
+		if !until(wait, func() bool { return gone.call("GET", "/_matrix/client/v3/account/whoami", nil, nil) != nil }) {
+			t.Error("the deleted login's device still works there")
+		}
+		var devices struct {
+			Devices []struct {
+				Name string `json:"display_name"`
+			} `json:"devices"`
+		}
+		if !until(wait, func() bool {
+			must(t, e.there.call("GET", "/_matrix/client/v3/devices", nil, &devices))
+			for _, d := range devices.Devices {
+				if d.Name == "Matrix bridge" {
+					return false
+				}
+			}
+			return true
+		}) {
+			t.Errorf("devices of the bridge left there: %+v", devices.Devices)
+		}
+	})
+
 }
