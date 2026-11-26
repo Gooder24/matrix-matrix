@@ -292,8 +292,8 @@ func (mc *MatrixClient) dropDevice(ctx context.Context) {
 	mc.logoutDone = endDevice(ctx, m)
 }
 
-// endDevice asks the other homeserver to end a device in the background; the channel closes when it answered or
-// logoutWait passed.
+// endDevice asks the other homeserver to end a device in the background, again after an error until logoutWait
+// passed; the channel closes when it is done.
 func endDevice(ctx context.Context, m *UserLoginMetadata) chan struct{} {
 	done := make(chan struct{})
 	c, err := mautrix.NewClient(m.Homeserver, m.UserID, m.Token)
@@ -306,11 +306,29 @@ func endDevice(ctx context.Context, m *UserLoginMetadata) chan struct{} {
 	go func() {
 		defer close(done)
 		defer cancel()
-		if _, err := c.Logout(ctx); err != nil {
-			log.Warn().Err(err).Msg("Failed to end the device on the other homeserver")
+		for delay := time.Second; ; delay *= 2 {
+			_, err := c.Logout(ctx)
+			if err == nil || errors.Is(err, mautrix.MUnknownToken) {
+				return // ended, or already gone there
+			}
+			select {
+			case <-ctx.Done():
+				log.Warn().Err(err).Msg("Failed to end the device on the other homeserver")
+				return
+			case <-time.After(delay):
+			}
 		}
 	}()
 	return done
+}
+
+// retire stops a client whose login a new device took over; its keys and its device there are the sign-in's to end.
+func (mc *MatrixClient) retire() {
+	mc.stopRetry(true)
+	mc.stopMu.Lock()
+	mc.dropped = true
+	mc.stopMu.Unlock()
+	mc.Disconnect()
 }
 
 // logoutWait is how long the other homeserver gets to end the device.

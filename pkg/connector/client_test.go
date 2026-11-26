@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -115,5 +116,21 @@ func TestLeftSignInEndsItsDevice(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the left sign-in's device was never ended there")
+	}
+}
+
+// One error from the other homeserver does not leave the device there: the logout is asked again.
+func TestEndDeviceTriesAgain(t *testing.T) {
+	var asked atomic.Int32
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/_matrix/client/v3/logout" && asked.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer hs.Close()
+	<-endDevice(context.Background(), &UserLoginMetadata{Homeserver: hs.URL, UserID: "@alex:remote.example", Token: "t"})
+	if n := asked.Load(); n != 2 {
+		t.Errorf("the logout was asked %d times, want 2", n)
 	}
 }

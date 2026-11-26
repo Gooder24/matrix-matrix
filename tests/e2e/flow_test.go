@@ -614,6 +614,48 @@ func TestBridge(t *testing.T) {
 		}
 	})
 
+	t.Run("a sign-in whose save fails keeps the earlier one", func(t *testing.T) {
+		loginID, _ := e.state()
+		token := e.query("SELECT json_extract(metadata, '$.token') FROM user_login WHERE id = ?", loginID)
+		e.exec("CREATE TRIGGER no_save BEFORE UPDATE ON user_login BEGIN SELECT RAISE(ABORT, 'no save'); END")
+		_, done, err := e.login()
+		e.exec("DROP TRIGGER no_save")
+		if err == nil {
+			t.Fatalf("a sign-in the bridge could not save went through: %+v", done)
+		}
+		if got := e.query("SELECT json_extract(metadata, '$.token') FROM user_login WHERE id = ?", loginID); got != token {
+			t.Error("the saved login changed")
+		}
+		kept := &mx{t: t, base: e.remoteURL, token: token}
+		if err := kept.call("GET", "/_matrix/client/v3/account/whoami", nil, nil); err != nil {
+			t.Errorf("the earlier device was ended there: %v", err)
+		}
+		if !until(wait, func() bool { _, s := e.state(); return s == "CONNECTED" }) {
+			t.Error("the earlier login did not go on")
+		}
+		var devices struct {
+			Devices []struct {
+				Name string `json:"display_name"`
+			} `json:"devices"`
+		}
+		if !until(wait, func() bool {
+			must(t, e.there.call("GET", "/_matrix/client/v3/devices", nil, &devices))
+			n := 0
+			for _, d := range devices.Devices {
+				if d.Name == "Matrix bridge" {
+					n++
+				}
+			}
+			return n == 1
+		}) {
+			t.Errorf("the refused sign-in's device was not ended there: %+v", devices.Devices)
+		}
+		bea.send(thereRoom, event.EventMessage, &event.MessageEventContent{MsgType: event.MsgText, Body: "still with you"})
+		if !until(wait, func() bool { return c.find(dm, isBody("still with you")) != nil }) {
+			t.Error("a message after the refused sign-in did not come")
+		}
+	})
+
 	t.Run("sign-out cleans up", func(t *testing.T) {
 		loginID, _ := e.state()
 		token := e.query("SELECT json_extract(metadata, '$.token') FROM user_login WHERE id = ?", loginID)

@@ -435,6 +435,18 @@ func (f *friend) send(room id.RoomID, typ event.Type, content any) id.EventID {
 }
 
 // query reads one value from the bridge's database.
+// exec changes bridge.db under the running bridge (failure injection).
+func (e *env) exec(stmt string) {
+	db, err := sql.Open("sqlite3", "file:"+filepath.Join(e.dir, "bridge.db")+"?_busy_timeout=5000")
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err = db.Exec(stmt); err != nil {
+		e.t.Fatalf("%s: %v", stmt, err)
+	}
+}
+
 func (e *env) query(q string, args ...any) string {
 	db, err := sql.Open("sqlite3", "file:"+filepath.Join(e.dir, "bridge.db")+"?mode=ro")
 	if err != nil {
