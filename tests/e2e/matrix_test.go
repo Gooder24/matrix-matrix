@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -24,6 +25,7 @@ type mx struct {
 	events    map[string][]map[string]any // room → state and timeline events, in order
 	ephemeral map[string][]map[string]any // room → receipts and typing, in order
 	stop      chan struct{}
+	noJoin    atomic.Bool // leaves invitations alone, so only the bridge can take them
 }
 
 func (c *mx) call(method, path string, body any, out any) error {
@@ -115,6 +117,9 @@ func (c *mx) syncLoop() {
 		}
 		c.mu.Unlock()
 		for room := range resp.Rooms.Invite {
+			if c.noJoin.Load() {
+				break
+			}
 			_ = c.call("POST", "/_matrix/client/v3/join/"+url.PathEscape(room), map[string]any{}, nil)
 		}
 	}

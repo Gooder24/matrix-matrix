@@ -27,7 +27,8 @@ want the account there to stay the one that is in the rooms.
   Signing out ends the device there and deletes the file. Never restore an old one from a backup: sign out and
   in again instead, or encryption with the other people's devices breaks.
 * **Rooms:** every joined room there becomes a room here, created when something happens in it. A room without
-  a name and with one other person is a DM. Invitations there are not accepted, and rooms that are themselves
+  a name and with one other person is a DM. Invitations there are not accepted, except on a homeserver of
+  `accept_invites_on`, and rooms that are themselves
   bridges there (`m.bridge`, `uk.half-shot.bridge`) are left out, or everything would arrive twice.
 * **History:** only what comes after signing in. When the bridge was away long enough that a room has more new
   events than one sync carries, the room gets a notice that some messages did not come across.
@@ -80,6 +81,7 @@ come from your Matrix account rather than from a ghost.
 | `crypto_dir` | `crypto` | Where each login's keys and sync state are kept. |
 | `max_file_size` | `26214400` | Files larger than this do not cross, in either direction. |
 | `members_at_once` | `20` | Rooms with up to this many people get all their members at once. |
+| `accept_invites_on` | `[]` | Homeservers, as signed in to, where the account accepts every invitation. Only for a server that itself admits only the people you chose (a federation allowlist, like [Weft Priamo](https://github.com/Gooder24/weft/tree/main/docs/navrhy/2026-11-priamo)). |
 
 ## Measurements
 

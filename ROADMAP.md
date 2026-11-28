@@ -37,5 +37,5 @@
   * [x] New DMs by Matrix ID (`create_dm`), reusing one the account already has
   * [x] Joining a room by `#alias:server` or room ID (`POST /v3/join`)
   * [x] Rooms that are themselves bridges there are left out
-  * [ ] Accepting invitations there
+  * [x] Accepting invitations there, on the homeservers of `accept_invites_on` only
   * [ ] Cross-signing and key backup (the bridge's device is not verified)

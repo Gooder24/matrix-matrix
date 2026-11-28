@@ -138,6 +138,7 @@ func (mc *MatrixClient) start(ctx context.Context) error {
 	for _, t := range []event.Type{event.EventMessage, event.EventSticker, event.EventReaction, event.EventRedaction} {
 		syncer.OnEventType(t, mc.onEvent)
 	}
+	syncer.OnEventType(event.StateMember, mc.onInvite)
 	syncer.OnEventType(event.EphemeralEventReceipt, mc.onReceipt)
 	syncer.OnEventType(event.EphemeralEventTyping, mc.onTyping)
 	syncer.OnSync(mc.onSync)

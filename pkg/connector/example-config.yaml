@@ -7,3 +7,7 @@ crypto_dir: crypto
 max_file_size: 26214400
 # Rooms with up to this many people get all their members at once; in bigger ones people appear as they write.
 members_at_once: 20
+# Homeservers, as signed in to (https://example.org or http://127.0.0.1:8448), where the account accepts every
+# invitation. Only for a server that itself lets in only the people you chose (a federation allowlist, as Weft
+# Priamo's); elsewhere invitations are never accepted, so a stranger cannot pull the account into a room.
+accept_invites_on: []

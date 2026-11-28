@@ -154,7 +154,10 @@ func (e *env) provisionAs(user, method, path string, body any, out any) error {
 	return nil
 }
 
-func setup(t *testing.T) *env {
+func setup(t *testing.T) *env { return setupWith(t, nil) }
+
+// setupWith is setup with more lines of the bridge's network section, made from the other server's address.
+func setupWith(t *testing.T, network func(remoteURL string) string) *env {
 	if os.Getenv("TUWUNEL") == "" {
 		t.Skip("TUWUNEL is not set")
 	}
@@ -199,12 +202,17 @@ namespaces:
 	go there.syncLoop()
 	t.Cleanup(func() { close(there.stop) })
 	bea := newFriend(t, dir, remoteURL, "bea", remoteToken)
+	more := ""
+	if network != nil {
+		more = network(remoteURL)
+	}
 
 	config := fmt.Sprintf(`network:
     device_name: Matrix bridge
     crypto_dir: %s
     max_file_size: 1048576
     members_at_once: 20
+%s
 bridge:
     personal_filtering_spaces: false
     permissions:
@@ -245,7 +253,7 @@ logging:
     writers:
     - type: stdout
       format: pretty
-`, filepath.Join(dir, "crypto"), c.userID, server, filepath.Join(dir, "bridge.db"), localURL, server, brPort, brPort, asToken, hsToken,
+`, filepath.Join(dir, "crypto"), more, c.userID, server, filepath.Join(dir, "bridge.db"), localURL, server, brPort, brPort, asToken, hsToken,
 		server, asToken, provSecret)
 	must(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(config), 0o600))
 	e := &env{t: t, dir: dir, c: c, there: there, bea: bea, remoteURL: remoteURL, bin: bin, config: filepath.Join(dir, "config.yaml"),
