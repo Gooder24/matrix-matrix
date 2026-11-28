@@ -126,6 +126,7 @@ func (mc *MatrixClient) start(ctx context.Context) error {
 	helper.DBAccountID = string(m.UserID)
 	helper.DecryptErrorCallback = mc.cannotDecrypt
 	syncer := client.Syncer.(*mautrix.DefaultSyncer)
+	client.Syncer = failSaying{syncer, mc}
 	syncer.FilterJSON = &mautrix.Filter{Room: &mautrix.RoomFilter{
 		Timeline: &mautrix.FilterPart{Limit: 20},
 		State:    &mautrix.FilterPart{LazyLoadMembers: true},
@@ -167,6 +168,21 @@ func (mc *MatrixClient) syncLoop(ctx context.Context, client *mautrix.Client, do
 		case <-time.After(30 * time.Second):
 		}
 	}
+}
+
+// failSaying is mautrix's syncer, which retries a failed sync by itself: it says so in the bridge state, or the
+// account would show connected all the while the other homeserver is away. The next sync says connected again.
+type failSaying struct {
+	*mautrix.DefaultSyncer
+	mc *MatrixClient
+}
+
+func (s failSaying) OnFailedSync(res *mautrix.RespSync, err error) (time.Duration, error) {
+	if errors.Is(err, mautrix.MUnknownToken) {
+		return 0, err
+	}
+	s.mc.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateTransientDisconnect, Error: "matrix-sync", Message: errorText(err)})
+	return 10 * time.Second, nil
 }
 
 func (mc *MatrixClient) onSync(ctx context.Context, resp *mautrix.RespSync, since string) bool {
